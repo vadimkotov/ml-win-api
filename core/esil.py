@@ -389,7 +389,6 @@ class ESILVM(object):
             
             # self.write_mem(dst, x, 4)
             for addr, value in self.memory.iteritems():
-                
                 if value == dst:
                     self.write_mem(addr, x, 4)
 
@@ -475,7 +474,14 @@ class ESILVM(object):
         
     def execute(self, expr):
         autolog(expr)
+
+        # TODO: instead of doing this account for 'unicode' in all the checks
+        # this is a temporary solution
+        expr = expr.encode('utf-8')
+
+        
         for op in expr.split(','):
+
             if self.__is_register(op)  or self.__is_x86_flag(op) \
                or self.__is_ESIL_flag(op) or self.__is_ESIL_flag_value(op)\
                or self.__is_segment_register(op) or self.__is_eflags(op):
