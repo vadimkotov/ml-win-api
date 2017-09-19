@@ -1,6 +1,11 @@
+# TODO:
+# - SSE support
+# - finish emulating all the ESIL commands
+# - 64-bit support
+
 import re
 import logging
-logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s')
+# logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s')
 import inspect
 import z3
 
@@ -77,6 +82,16 @@ def mem_key(addr, size):
     addr_str = str(z3.simplify(addr))
     return '{0}:{1}'.format(size, addr_str)
 
+def get_name_from_addr_str(addr):
+    r_ebp = re.search(r'(\d+) \+ ebp', addr)
+    if r_ebp:
+        offset = twos_comp(int(r_ebp.group(1)), 32)
+        if offset < 0:
+            return 'var_%Xh' % -offset
+        else:
+            return 'arg_%Xh' % offset
+        
+
 REG_MAP  = {
     'rax': ('eax', get32, set32), # dummy
     'eax': ('eax', get32, set32),
@@ -108,13 +123,16 @@ REG_MAP  = {
     'dil': ('edi', get8l, set8l),
 
     'esp': ('esp', get32, set32),
+    'sp': ('esp', get16, set16),
+    
     'ebp': ('ebp', get32, set32),
+    'bp': ('ebp', get16, set16),
+    
     'eip': ('eip', get32, set32)
 }
 
 
 
-        
 
 class ESILVM(object):
     def __init__(self):
@@ -306,13 +324,8 @@ class ESILVM(object):
         self.memory[key] = value #z3.simplify(value)
 
     def arg_or_var(self, addr):
-        r_ebp = re.search(r'(\d+) \+ ebp', addr)
-        if r_ebp:
-            offset = twos_comp(int(r_ebp.group(1)), 32)
-            if offset < 0:
-                name = 'var_%Xh' % -offset
-            else:
-                name = 'arg_%Xh' % offset
+        name = get_name_from_addr_str(addr)
+        if name:
             return z3.BitVec(name, 32)
         return self.__new_mem_var()
         
@@ -350,6 +363,8 @@ class ESILVM(object):
             return self.x86_flags[x]
         if self.__is_eflags(x):
             return self.eflags
+        if self.__is_segment_register(x):
+            return self.segment_registers.get(x, zero())
         return x
 
     def __new_unk_var(self):

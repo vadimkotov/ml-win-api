@@ -36,7 +36,11 @@ class Radare:
             return self.__data.get(key)
         else:
             logging.debug("{0} - not cached, executing...".format(command))
-            res = self.__r2p.cmdj(command)
+            try:
+                res = self.__r2p.cmdj(command)
+            except AttributeError as e:
+                logging.error(str(e))
+                return
             self.__data[key] = res
             self.__need_save_cache = True
             return res
@@ -63,6 +67,9 @@ class Radare:
     
     def get_functions(self):
         return self.cmdj('aflj')
+
+    def get_sections(self):
+        return self.cmdj('iSj')
         
     def get_disassembly(self, offset, size=None):
         if self.cmd('s 0x%x;' % offset):

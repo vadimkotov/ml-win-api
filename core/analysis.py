@@ -1,8 +1,11 @@
+# TODO:
+# - Translate CFG algo to non-recursive
+
 import sys
 import re
 import networkx as nx
 import random
-
+import logging
 
 class FunctionAnalysisError(Exception):pass
 class Function:
@@ -86,8 +89,18 @@ class Function:
 
         # Check for tail calls
         if not self.exit_blocks:
-            if self.ops[-1].get('type') == 'jmp':
-                self.exit_blocks.append(sorted(self.blocks.keys())[-1])
+            # if self.ops[-1].get('type') == 'jmp':
+            #     self.exit_blocks.append(sorted(self.blocks.keys())[-1])
+
+            # Consider the last block exit block
+            last_block = sorted(self.blocks.keys())[-1]
+            self.exit_blocks.append(last_block)
+            
+            if last_block == self.offset:
+                for node in self.cfg.nodes():
+                    if node != self.offset:
+                        self.cfg.remove_node(node)
+            
 
         # Some functions may share bytes and it can result in unreacheable
         # nodes, let's get rid of unreacheable nodes
@@ -97,7 +110,10 @@ class Function:
                 self.cfg.remove_node(node)
             
 
-    def traverse(self, start_):
+    def traverse(self, start_, depth = 0):
+        if depth > 1000:
+            return
+        
         if start_ in self.__visited:
             return
         self.__visited.append(start_)
@@ -107,7 +123,7 @@ class Function:
             # print '0x%x -> 0x%x' % (from_, to_)
             # self.add_node(to_)
             self.add_edge(from_, to_)
-            self.traverse(to_)
+            self.traverse(to_, depth + 1)
 
         # def is_valid_target(addr):
         #     return addr >= self.offset and addr <= self.end
@@ -129,7 +145,7 @@ class Function:
                 self.exit_blocks.append(start_)
                 return
                 
-            if op['type'] in ['cjmp', 'jmp']:
+            if op['type'] in ['cjmp', 'jmp', 'ujmp']:
                 jmp_target = op.get('jump')
                 if jmp_target: #and is_valid_target(jmp_target):
                     new_edge_and_traverse(start_, jmp_target)
@@ -139,7 +155,7 @@ class Function:
                 return
 
             addr = op['next_addr']
-            if addr in self.blocks:
+            if addr in self.blocks and addr != self.offset:
                  # self.add_edge(start_, addr)
                  new_edge_and_traverse(start_, addr)
                  return
@@ -190,18 +206,27 @@ class Function:
 
         while True:
             block_addr_list = self.blocks.get(block)
+
             if not block_addr_list:
-                return
+                break
+            
             op_addr = block_addr_list[-1]
             op = self.addr_map[op_addr]
             if op['type'] == 'jmp':
-                target = op['jump']
+                if 'jump' in op:
+                    target = op['jump']
+                else:
+                    break
             elif op['type'] == 'cjmp':
                 target = random.choice([op.get('jump'), op.get('fail')])
             else:
                 target = op['next_addr']#self.next_addr(op_addr)
 
             path.append(target)
+            # Pretty arbitrary number
+            if len(path) > 300:
+                break
+            
             block = target
             
             if target in self.exit_blocks:
@@ -209,25 +234,23 @@ class Function:
 
         return path
 
-    """
-    def next_addr(self, addr):
-        all_ = sorted(self.addr_map.keys())
-        idx = all_.index(addr) + 1
-        if idx >= len(all_):
-            return None
-        return all_[idx]
-    """
-
+    
 SYM_IMP_REGEX = re.compile(r'sym\.imp\.(?P<lib>.+?)_(?P<name>.+)')
-# IMPORT_REGEX = re.compile(r'(?P<lib>.+?)_(?P<name>.+)')
 IMPORT_REGEX = re.compile(r'(?P<lib>.+?\.(?:dll|drv|exe|sys|cpl))_(?P<name>.+)', re.I)
 
+class ExecutableInitError(Exception):pass
 class Executable:
     def __init__(self, r2):
         self.r2 = r2
         self.file_info = r2.get_file_info()
+        bitness = self.file_info.get('bin')['bits']
+        
+        if bitness != 32:
+            raise ExecutableInitError("%d bit executables are not supported" % bitness)
+        
         self.entry_point = r2.get_entry_point()
         self.import_table = self.init_import_table()
+        self.sections = r2.get_sections()
         self.functions = self.init_functions()
 
     def init_import_table(self):
@@ -239,6 +262,7 @@ class Executable:
                 'name': ir.group('name')
             }
         return import_table
+
             
     def is_jmp_to_iat(self, ops):
         if len(ops) == 1:
@@ -249,10 +273,14 @@ class Executable:
                 return self.import_table[op.get('ptr')]
         
     def init_functions(self):
-        functions = {}
+
         r2_func_list = self.r2.get_functions()
         # func_addresses = [f['offset'] for f in r2_func_list]
-        
+
+        if not r2_func_list:
+            return {}
+
+        functions = {}
         for i in xrange(len(r2_func_list)):
             f = r2_func_list[i]
             if f['offset'] in self.import_table:
@@ -265,12 +293,17 @@ class Executable:
 
             ops = self.r2.get_disassembly(f['offset'], func_size)
 
+            if not ops:
+                continue
+            
             try:
                 function_ = Function(f['offset'], f['name'], ops)
             except FunctionAnalysisError as e:
-                # logging.error(e)
-                print str(e)
+                # had to make DEBUG otherwise too much output
+                logging.debug(e)
                 continue
+            except RuntimeError as e:
+                logging.error('0x%x - possibly recursion depth exceeded' % f['offset'])
                 
             function_.jmp_to_iat = self.is_jmp_to_iat(ops)
             functions[f.get('offset')] = function_
